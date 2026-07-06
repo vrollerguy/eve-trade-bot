@@ -1,0 +1,92 @@
+# 🚀 EVE Trade Bot
+
+Автоматический бот на n8n, который мониторит рынок EVE Online через официальный публичный API (ESI) и присылает в Telegram реальные возможности для межрегионального арбитража — с учётом налога с продажи, брокерской комиссии и доступного объёма товара.
+
+## Что делает бот
+
+1. По расписанию (каждые 15 минут) запрашивает актуальные ордера по списку отслеживаемых товаров сразу в двух торговых хабах — **Jita** (The Forge) и **Amarr** (Domain)
+2. Находит лучшую цену покупки и продажи в каждом регионе
+3. Считает выгоду обоих направлений арбитража (Jita → Amarr и Amarr → Jita), учитывая:
+   - Sales tax (налог с продажи)
+   - Broker fee (комиссия за выставление ордера)
+   - Реально доступный объём по этой цене (чтобы не путать эффектный % маржи с реальной прибылью)
+4. Отфильтровывает шум — в уведомление попадают только возможности с прибылью выше заданного порога
+5. Резолвит ID станций в человекочитаемые названия
+6. Присылает готовое сообщение в Telegram
+
+Пример уведомления:
+```
+🚀 Арбитражная возможность в EVE!
+
+Товар: Rifter
+Маршрут: Amarr -> Jita
+Купить: 299900 ISK в Aghesi VI - Moon 10 - Ministry of Assessment Bureau Offices
+Продать: 343400 ISK в Otsela VI - Moon 13 - Ishukone Corporation Factory
+Объём: 3 шт.
+Прибыль: 53235 ISK (5.9%)
+```
+
+## Архитектура workflow
+
+```
+Schedule Trigger ─┐
+                  ├─→ Watchlist ─┬─→ HTTP Request (Jita)  → Jita Best Prices  ─┐
+Manual Trigger ───┘              │                                             ├─→ Merge → Arbitrage Calc → Filter → Resolve Station Names → Telegram
+                                  └─→ HTTP Request (Amarr) → Amarr Best Prices ─┘
+```
+
+- **Watchlist** — список отслеживаемых товаров (type_id из EVE)
+- **HTTP Request (Jita/Amarr)** — запрос к `esi.evetech.net/latest/markets/{region_id}/orders/`, публичный API, авторизация не нужна
+- **Best Prices** — группировка ордеров по товару, поиск лучшей цены покупки/продажи в каждом регионе
+- **Merge** — сопоставление данных по двум регионам по `type_id`
+- **Arbitrage Calc** — расчёт чистой прибыли по обоим направлениям с учётом налогов и объёма, выбор лучшего маршрута
+- **Filter** — отсечение возможностей ниже порога прибыли
+- **Resolve Station Names** — обогащение результата названиями станций через ESI
+- **Telegram** — отправка итогового уведомления
+
+## Технологии
+
+- **n8n** (self-hosted, Docker) — движок автоматизации
+- **EVE Swagger Interface (ESI)** — официальный публичный API EVE Online
+- **JavaScript** (n8n Code nodes) — вся бизнес-логика расчётов
+- **Telegram Bot API** — доставка уведомлений
+
+## Как запустить
+
+### 1. Поднять n8n локально
+
+```bash
+docker volume create n8n_data
+docker run -d --name n8n --restart unless-stopped -p 5678:5678 \
+  -v n8n_data:/home/node/.n8n \
+  -e GENERIC_TIMEZONE="Europe/Moscow" -e TZ="Europe/Moscow" \
+  docker.n8n.io/n8nio/n8n
+```
+
+Откройте `http://localhost:5678`, создайте аккаунт.
+
+### 2. Импортировать workflow
+
+В редакторе n8n: **Import from File** → выберите `workflow.json` из этого репозитория.
+
+### 3. Настроить Telegram
+
+1. Создайте бота через [@BotFather](https://t.me/BotFather), получите токен
+2. В n8n: **Credentials → Add Credential → Telegram API**, вставьте токен
+3. Узнайте свой Chat ID через [@userinfobot](https://t.me/userinfobot)
+4. В ноде **"Send a text message"** укажите ваш Chat ID вместо `YOUR_TELEGRAM_CHAT_ID` и выберите созданный credential
+
+### 4. Настроить watchlist
+
+В ноде **Watchlist** укажите товары для отслеживания (`type_id` можно найти через ESI `/universe/ids/` по названию предмета).
+
+### 5. Активировать
+
+Включите переключатель **Active/Publish** — workflow начнёт работать по расписанию самостоятельно.
+
+## Возможные доработки
+
+- Расширение watchlist до полного скана рынка (с постраничной обработкой `X-Pages`)
+- Учёт реальных навыков персонажа (Accounting/Broker Relations) через ESI OAuth вместо усреднённых ставок налога
+- Добавление большего числа торговых хабов (Dodixie, Rens, Hek)
+- Учёт грузоподъёмности и стоимости логистики между станциями

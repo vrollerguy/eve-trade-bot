@@ -1,0 +1,368 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "return [\n  { json: { type_id: 40519, name: \"Skill Extractor\" } },\n  { json: { type_id: 587, name: \"Rifter\" } },\n  { json: { type_id: 596, name: \"Impairor\" } },\n  { json: { type_id: 28668, name: \"Nanite Repair Paste\" } }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        16
+      ],
+      "id": "f473cc78-f935-4bf7-8e20-44a0eb2fa557",
+      "name": "Watchlist"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -208,
+        16
+      ],
+      "id": "97419c0d-d0df-47db-9875-6d08e7a9a1bf",
+      "name": "Manual Trigger"
+    },
+    {
+      "parameters": {
+        "url": "https://esi.evetech.net/latest/markets/10000043/orders/",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "order_type",
+              "value": "all"
+            },
+            {
+              "name": "type_id",
+              "value": "={{ $json.type_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        240,
+        208
+      ],
+      "id": "980d826f-a632-4446-9526-173312611ac6",
+      "name": "HTTP Request - Amarr"
+    },
+    {
+      "parameters": {
+        "url": "https://esi.evetech.net/latest/markets/10000002/orders/",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "order_type",
+              "value": "all"
+            },
+            {
+              "name": "type_id",
+              "value": "={{ $json.type_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        240,
+        16
+      ],
+      "id": "9dd1b95b-1b0e-4b23-bfbc-47d9e74e15c8",
+      "name": "HTTP Request - Jita"
+    },
+    {
+      "parameters": {
+        "jsCode": "const orders = $input.all().map(item => item.json);\nconst grouped = {};\nfor (const o of orders) {\n  if (!grouped[o.type_id]) grouped[o.type_id] = [];\n  grouped[o.type_id].push(o);\n}\n\nconst results = [];\nfor (const typeId in grouped) {\n  const group = grouped[typeId];\n  const sellOrders = group.filter(o => o.is_buy_order === false);\n  const buyOrders = group.filter(o => o.is_buy_order === true);\n  const bestSell = sellOrders.length ? Math.min(...sellOrders.map(o => o.price)) : null;\n  const bestBuy = buyOrders.length ? Math.max(...buyOrders.map(o => o.price)) : null;\n  const bestSellOrder = sellOrders.find(o => o.price === bestSell);\n  const bestBuyOrder = buyOrders.find(o => o.price === bestBuy);\n\n  results.push({\n    json: {\n      type_id: Number(typeId),\n      jita_best_sell: bestSell,\n      jita_best_sell_location: bestSellOrder?.location_id ?? null,\n      jita_best_sell_volume: bestSellOrder?.volume_remain ?? null,\n      jita_best_buy: bestBuy,\n      jita_best_buy_location: bestBuyOrder?.location_id ?? null,\n      jita_best_buy_volume: bestBuyOrder?.volume_remain ?? null\n    }\n  });\n}\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        16
+      ],
+      "id": "a39bdd5f-6a13-43fb-a4e2-5da9b96a4796",
+      "name": "Jita Best Prices"
+    },
+    {
+      "parameters": {
+        "jsCode": "const orders = $input.all().map(item => item.json);\nconst grouped = {};\nfor (const o of orders) {\n  if (!grouped[o.type_id]) grouped[o.type_id] = [];\n  grouped[o.type_id].push(o);\n}\n\nconst results = [];\nfor (const typeId in grouped) {\n  const group = grouped[typeId];\n  const sellOrders = group.filter(o => o.is_buy_order === false);\n  const buyOrders = group.filter(o => o.is_buy_order === true);\n  const bestSell = sellOrders.length ? Math.min(...sellOrders.map(o => o.price)) : null;\n  const bestBuy = buyOrders.length ? Math.max(...buyOrders.map(o => o.price)) : null;\n  const bestSellOrder = sellOrders.find(o => o.price === bestSell);\n  const bestBuyOrder = buyOrders.find(o => o.price === bestBuy);\n\n  results.push({\n    json: {\n      type_id: Number(typeId),\n      amarr_best_sell: bestSell,\n      amarr_best_sell_location: bestSellOrder?.location_id ?? null,\n      amarr_best_sell_volume: bestSellOrder?.volume_remain ?? null,\n      amarr_best_buy: bestBuy,\n      amarr_best_buy_location: bestBuyOrder?.location_id ?? null,\n      amarr_best_buy_volume: bestBuyOrder?.volume_remain ?? null\n    }\n  });\n}\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        208
+      ],
+      "id": "f3ab57d3-47f4-40ab-b7fc-89cb5ad53fec",
+      "name": "Amarr Best Prices"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "advanced": true,
+        "mergeByFields": {
+          "values": [
+            {
+              "field1": "type_id",
+              "field2": "type_id"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        688,
+        32
+      ],
+      "id": "994de08b-d502-4619-a3d1-d429fd99e43e",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "const SALES_TAX = 0.045;\nconst BROKER_FEE = 0.03;\n\nfunction calcRoute(buyPrice, sellPrice) {\n  if (buyPrice == null || sellPrice == null) return null;\n  const grossSpread = sellPrice - buyPrice;\n  const netProfit = grossSpread - (sellPrice * SALES_TAX) - (sellPrice * BROKER_FEE);\n  const netMarginPct = (netProfit / buyPrice) * 100;\n  return { grossSpread, netProfit, netMarginPct };\n}\n\nconst items = $input.all().map(item => item.json);\nconst results = [];\n\nfor (const it of items) {\n  const routes = [\n    { name: \"Jita -> Amarr\", buyPrice: it.jita_best_sell, sellPrice: it.amarr_best_sell,\n      buyLoc: it.jita_best_sell_location, sellLoc: it.amarr_best_sell_location,\n      availableVolume: it.jita_best_sell_volume },\n    { name: \"Amarr -> Jita\", buyPrice: it.amarr_best_sell, sellPrice: it.jita_best_sell,\n      buyLoc: it.amarr_best_sell_location, sellLoc: it.jita_best_sell_location,\n      availableVolume: it.amarr_best_sell_volume }\n  ];\n\n  let best = null;\n  for (const r of routes) {\n    const calc = calcRoute(r.buyPrice, r.sellPrice);\n    if (!calc) continue;\n    if (!best || calc.netMarginPct > best.calc.netMarginPct) {\n      best = { route: r, calc };\n    }\n  }\n  if (!best) continue;\n\n  const units = best.route.availableVolume ?? 0;\n  const totalPotentialProfit = best.calc.netProfit * units;\n\n  results.push({\n    json: {\n      type_id: it.type_id,\n      route: best.route.name,\n      buy_price: best.route.buyPrice,\n      buy_location: best.route.buyLoc,\n      sell_price: best.route.sellPrice,\n      sell_location: best.route.sellLoc,\n      units_available: units,\n      gross_spread: best.calc.grossSpread,\n      net_profit_per_unit: best.calc.netProfit,\n      net_margin_pct: best.calc.netMarginPct,\n      total_potential_profit: totalPotentialProfit\n    }\n  });\n}\n\nresults.sort((a, b) => b.json.total_potential_profit - a.json.total_potential_profit);\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        32
+      ],
+      "id": "c75868c1-1b7e-476e-811d-35f180dfeff1",
+      "name": "Arbitrage Calc"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "3bc84acd-89de-47ec-a1bf-feb9728f064b",
+              "leftValue": "={{ $json.total_potential_profit }}",
+              "rightValue": 10000,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        1072,
+        32
+      ],
+      "id": "485841ad-365e-4648-9871-5c312a7334ac",
+      "name": "Filter"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst cache = {};\n\nconst watchlist = $('Watchlist').all().map(i => i.json);\nconst ITEM_NAMES = Object.fromEntries(watchlist.map(w => [w.type_id, w.name]));\n\nconst getStationName = async (stationId) => {\n  if (cache[stationId]) return cache[stationId];\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'GET',\n      url: `https://esi.evetech.net/latest/universe/stations/${stationId}/`,\n      qs: { datasource: 'tranquility' },\n      json: true\n    });\n    cache[stationId] = res.name;\n    return res.name;\n  } catch (e) {\n    return `Station ${stationId}`;\n  }\n};\n\nconst results = [];\nfor (const item of items) {\n  const json = item.json;\n  const buyName = await getStationName(json.buy_location);\n  const sellName = await getStationName(json.sell_location);\n  results.push({\n    json: {\n      ...json,\n      item_name: ITEM_NAMES[json.type_id] || json.type_id,\n      buy_station_name: buyName,\n      sell_station_name: sellName\n    }\n  });\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        32
+      ],
+      "id": "d7df33a6-2f8c-477b-8351-3abbdd1150b2",
+      "name": "Resolve Station Names"
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=🚀 Арбитражная возможность в EVE!\n\nТовар: {{$json.item_name}}\nМаршрут: {{$json.route}}\nКупить: {{$json.buy_price}} ISK в {{$json.buy_station_name}}\nПродать: {{$json.sell_price}} ISK в {{$json.sell_station_name}}\nОбъём: {{$json.units_available}} шт.\nПрибыль: {{$json.total_potential_profit.toFixed(0)}} ISK ({{$json.net_margin_pct.toFixed(1)}}%)",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1296,
+        256
+      ],
+      "id": "950a2042-2cf9-4125-96f3-7293d5a768b2",
+      "name": "Send a text message",
+      "webhookId": "351d633c-63ca-42d6-9dcc-120be26a30c1",
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -160,
+        -176
+      ],
+      "id": "02bd191c-0bd2-4404-9925-05bcbb2ee761",
+      "name": "Schedule Trigger"
+    }
+  ],
+  "connections": {
+    "Watchlist": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Jita",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HTTP Request - Amarr",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Watchlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Amarr": {
+      "main": [
+        [
+          {
+            "node": "Amarr Best Prices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Jita": {
+      "main": [
+        [
+          {
+            "node": "Jita Best Prices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jita Best Prices": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Amarr Best Prices": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Arbitrage Calc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Arbitrage Calc": {
+      "main": [
+        [
+          {
+            "node": "Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter": {
+      "main": [
+        [
+          {
+            "node": "Resolve Station Names",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Station Names": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Watchlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "26c35b2a42f853d3aa7e9fc05a0c1f22b924bbd4d5a58ef93bb9b33df817c1c9"
+  }
+}
