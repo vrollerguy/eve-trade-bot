@@ -1,0 +1,218 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Ты риск-аналитик рынка EVE Online. Оцени арбитражную возможность в 1-2 предложениях на русском.\nВажно: указанный объём — это уже консервативная оценка (5% от среднего дневного оборота), а не остаток одного ордера, поэтому малый объём сам по себе не повод для тревоги. Ищи реальные признаки аномалии: маржа выше 30-40% при этом объёме, подозрительно круглые цифры цены, огромный разрыв между best_sell и marginal price.\nНЕ считай малый объём (7, 10, 23 штуки) сам по себе признаком аномалии — это заведомо консервативная цифра, а не остаток ордера. Ищи аномалии ТОЛЬКО в марже выше 40% или в разрыве между buy_price и marginal price больше 15%.\n\nТовар: {{ $json.item_name }}, маршрут {{ $json.route }}, покупка {{ $json.buy_price }} ISK, продажа {{ $json.sell_price }} ISK, объём {{ $json.units }} шт. (5% дневного оборота), маржа {{ $json.net_margin_pct }}%, прибыль {{ $json.total_profit }} ISK",
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [1648, -400],
+      "id": "afb996b3-e3a8-4792-8bf6-7b727d868ee5",
+      "name": "AI Risk Check1"
+    },
+    {
+      "parameters": { "options": {} },
+      "type": "@n8n/n8n-nodes-langchain.lmChatDeepSeek",
+      "typeVersion": 1,
+      "position": [1728, -176],
+      "id": "427f1068-7a76-4b4a-8d54-4d7cd4222eef",
+      "name": "DeepSeek Chat Model1",
+      "credentials": {
+        "deepSeekApi": { "id": "YOUR_DEEPSEEK_CREDENTIAL_ID", "name": "DeepSeek account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT w.type_id, w.name,\n  COALESCE((SELECT jsonb_object_agg(region_id, ROUND(vol_avg))\n            FROM (SELECT region_id, AVG(volume) AS vol_avg\n                  FROM daily_history dh\n                  WHERE dh.type_id = w.type_id AND date >= CURRENT_DATE - 7\n                  GROUP BY region_id) x), '{}'::jsonb) AS daily_vol\nFROM watchlist w\nWHERE w.status = 'active';",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [80, -496],
+      "id": "a196b947-bedb-4aa0-9216-121337dbb97e",
+      "name": "Load Watchlist",
+      "credentials": {
+        "postgres": { "id": "YOUR_POSTGRES_CREDENTIAL_ID", "name": "Trade Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = [];\nfor (const item of $input.all()) {\n  const it = item.json;\n  for (const [rid, b] of Object.entries(it.books)) {\n    rows.push({ json: { type_id: it.type_id, region_id: Number(rid),\n      best_sell: b.best_sell, best_buy: b.best_buy,\n      sell_volume: b.sell_units, buy_volume: b.buy_units } });\n  }\n}\nreturn rows;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [528, -592],
+      "id": "392a01db-cc22-4abe-ad17-2e109d8b2314",
+      "name": "Prepare Snapshots"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO price_snapshots (type_id, region_id, best_sell, best_buy, sell_volume, buy_volume)\nVALUES ($1, $2, NULLIF($3, 'null')::numeric, NULLIF($4, 'null')::numeric,\n        NULLIF($5, 'null')::bigint, NULLIF($6, 'null')::bigint)",
+        "options": {
+          "queryReplacement": "={{ $json.type_id }}, {{ $json.region_id }}, {{ $json.best_sell }}, {{ $json.best_buy }}, {{ $json.sell_volume }}, {{ $json.buy_volume }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [752, -592],
+      "id": "57f37539-f657-4b3d-9cf5-57544432394d",
+      "name": "Save Snapshots",
+      "credentials": {
+        "postgres": { "id": "YOUR_POSTGRES_CREDENTIAL_ID", "name": "Trade Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const SALES_TAX = 0.045;\nconst BROKER_FEE = 0.03;\nconst MAX_BUDGET = 200000000; // потолок капитала на одну позицию, ISK — поправьте под себя\n\nconst results = [];\nfor (const item of $input.all()) {\n  const it = item.json;\n  const rids = Object.keys(it.books);\n\n  for (const src of rids) for (const dst of rids) {\n    if (src === dst) continue;\n    const S = it.books[src], D = it.books[dst];\n    if (S.sell_vwap == null || S.sell_units === 0) continue;\n    const budgetUnits = Math.floor(MAX_BUDGET / S.sell_vwap);\n\n    // Стратегия 1: мгновенный флип — сливаем в buy-ордера назначения (без брокерки)\n    if (D.buy_vwap != null && D.buy_units > 0) {\n      const units = Math.min(S.sell_units, D.buy_units, budgetUnits);\n      const net = D.buy_vwap * (1 - SALES_TAX) - S.sell_vwap;\n      const profit = units * net;\n      if (units > 0 && profit > 0) {\n        results.push({ json: {\n          item_name: (it.name || String(it.type_id)).replace(/,/g, ' '),\n          type_id: it.type_id,\n          route: `${S.region_name} -> ${D.region_name} (мгновенно)`,\n          buy_price: Math.round(S.sell_vwap * 100) / 100,\n          buy_location: S.best_sell_location,\n          sell_price: Math.round(D.buy_vwap * 100) / 100,\n          sell_location: D.hub_station,\n          units_available: units,\n          net_margin_pct: net / S.sell_vwap * 100,\n          net_profit_per_unit: net,\n          total_potential_profit: profit,\n          capital_required: Math.round(units * S.sell_vwap)\n        }});\n      }\n    }\n\n    // Стратегия 2: свой sell-ордер (медленнее, но дороже) — объём ограничен дневным оборотом назначения\n    if (D.sell_marginal != null) {\n      const hasHistory = dst in (it.daily_vol || {});\n      const dstDaily = Number((it.daily_vol || {})[dst]) || 0;\n      const orderCap = hasHistory ? Math.max(1, Math.round(dstDaily * 0.05)) : 10;\n      const units = Math.min(S.sell_units, orderCap, budgetUnits);\n      const net = D.sell_marginal * (1 - SALES_TAX - BROKER_FEE) - S.sell_vwap;\n      const profit = units * net;\n      if (units > 0 && profit > 0) {\n        results.push({ json: {\n          item_name: (it.name || String(it.type_id)).replace(/,/g, ' '),\n          type_id: it.type_id,\n          route: `${S.region_name} -> ${D.region_name} (ордером)`,\n          buy_price: Math.round(S.sell_vwap * 100) / 100,\n          buy_location: S.best_sell_location,\n          sell_price: Math.round(D.sell_marginal * 100) / 100,\n          sell_location: D.hub_station,\n          units_available: units,\n          net_margin_pct: net / S.sell_vwap * 100,\n          net_profit_per_unit: net,\n          total_potential_profit: profit,\n          capital_required: Math.round(units * S.sell_vwap)\n        }});\n      }\n    }\n  }\n}\nresults.sort((a, b) => b.json.total_potential_profit - a.json.total_potential_profit);\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [528, -400],
+      "id": "42a96045-06d4-4669-a9e0-9c6effafc359",
+      "name": "Arbitrage Calc"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 3 },
+          "conditions": [
+            {
+              "id": "3bc84acd-89de-47ec-a1bf-feb9728f064b",
+              "leftValue": "={{ $json.total_potential_profit }}",
+              "rightValue": 10000,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [752, -400],
+      "id": "126fda5d-1f38-4ddc-869d-4fed8689a2c5",
+      "name": "Filter"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO opportunities (type_id, item_name, route, net_margin_pct, total_profit,\n                           buy_price, sell_price, buy_location, sell_location, units, notified)\nSELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true\nWHERE NOT EXISTS (\n  SELECT 1 FROM opportunities\n  WHERE type_id = $1 AND route = $3 AND ts > NOW() - INTERVAL '6 hours'\n)\nRETURNING *;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.type_id }}, {{ $json.item_name }}, {{ $json.route }}, {{ $json.net_margin_pct }}, {{ $json.total_potential_profit }}, {{ $json.buy_price }}, {{ $json.sell_price }}, {{ $json.buy_location }}, {{ $json.sell_location }}, {{ $json.units_available }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [976, -400],
+      "id": "74f99664-6284-42d9-b8fa-9f23ad8e77c4",
+      "name": "Log & Dedup Opportunity",
+      "credentials": {
+        "postgres": { "id": "YOUR_POSTGRES_CREDENTIAL_ID", "name": "Trade Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.message }}",
+        "additionalFields": { "appendAttribution": false, "parse_mode": "HTML" }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2224, -400],
+      "id": "ebe82550-76d2-4ecc-b4fa-504e2354156f",
+      "name": "Send a text message",
+      "webhookId": "351d633c-63ca-42d6-9dcc-120be26a30c1",
+      "credentials": {
+        "telegramApi": { "id": "YOUR_TELEGRAM_CREDENTIAL_ID", "name": "Telegram account" }
+      }
+    },
+    {
+      "parameters": {
+        "rule": { "interval": [ { "field": "minutes", "minutesInterval": 30 } ] }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [-144, -496],
+      "id": "6624777b-cf7c-4f22-9fca-25b87da2df68",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst cache = {};\n\nconst getStationName = async (stationId) => {\n  if (cache[stationId]) return cache[stationId];\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'GET',\n      url: `https://esi.evetech.net/latest/universe/stations/${stationId}/`,\n      qs: { datasource: 'tranquility' },\n      json: true\n    });\n    cache[stationId] = res.name;\n    return res.name;\n  } catch (e) {\n    return `Station ${stationId}`;\n  }\n};\n\nconst results = [];\nfor (const item of items) {\n  const j = item.json;\n  results.push({ json: { ...j,\n    buy_station_name: await getStationName(j.buy_location),\n    sell_station_name: await getStationName(j.sell_location)\n  }});\n}\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1424, -400],
+      "id": "5c1b7f00-8e5e-4917-a206-1e8b96aaef59",
+      "name": "Resolve Station Names"
+    },
+    {
+      "parameters": {
+        "jsCode": "const riskItems = $input.all();               // items с полем text (вердикт AI)\nconst opps = $('Resolve Station Names').all(); // те же items, в том же порядке, с данными по сделке\n\nconst combined = riskItems.map((r, i) => ({\n  ...opps[i].json,\n  risk: r.json.text ?? r.json.output ?? '',\n  capital_required: Number(opps[i].json.buy_price) * Number(opps[i].json.units)\n}));\n\ncombined.sort((a, b) => Number(b.total_profit) - Number(a.total_profit));\n\nconst totalCapital = combined.reduce((sum, c) => sum + c.capital_required, 0);\nconst totalProfit = combined.reduce((sum, c) => sum + Number(c.total_profit), 0);\n\nconst top = combined.slice(0, 5);\nconst lines = top.map((c, i) =>\n  `${i + 1}. ${c.item_name} — ${c.route}\\n` +\n  `   ${Math.round(Number(c.buy_price))} → ${Math.round(Number(c.sell_price))} ISK, ${c.units} шт, прибыль ${Math.round(Number(c.total_profit))} ISK (${Number(c.net_margin_pct).toFixed(1)}%)\\n` +\n  `   🤖 ${c.risk}`\n).join('\\n\\n');\n\nconst message = `📊 Найдено возможностей: ${combined.length}\nСуммарная потенциальная прибыль: ${Math.round(totalProfit)} ISK\nТребуется капитала: ${Math.round(totalCapital)} ISK\n\nТоп-5 по прибыли:\n\n${lines}`;\n\nreturn [{ json: { message } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, -400],
+      "id": "7ad83310-784f-4088-a090-c97f2db25c68",
+      "name": "Compose Message"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 3 },
+          "conditions": [
+            {
+              "id": "3bc84acd-89de-47ec-a1bf-feb9728f064b",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": 10000,
+              "operator": { "type": "number", "operation": "exists", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [1200, -400],
+      "id": "137d3465-3ff8-4913-ba1b-c66183b2ad85",
+      "name": "Only Inserted"
+    },
+    {
+      "parameters": {
+        "jsCode": "const REGIONS = {\n  10000002: { name: 'Jita',    hub: 60003760 },\n  10000043: { name: 'Amarr',   hub: 60008494 },\n  10000032: { name: 'Dodixie', hub: 60011866 },\n  10000030: { name: 'Rens',    hub: 60004588 },\n  10000042: { name: 'Hek',     hub: 60005686 }\n};\n\nconst items = $input.all().map(i => i.json);\nconst tasks = [];\nfor (const it of items)\n  for (const rid of Object.keys(REGIONS)) tasks.push({ it, rid: Number(rid) });\n\nconst fetchOrders = async (t) => {\n  try {\n    const orders = await this.helpers.httpRequest({\n      method: 'GET',\n      url: `https://esi.evetech.net/latest/markets/${t.rid}/orders/`,\n      qs: { datasource: 'tranquility', order_type: 'all', type_id: t.it.type_id },\n      json: true\n    });\n    return { ...t, orders };\n  } catch (e) { return { ...t, orders: [] }; }\n};\n\n// параллельно пачками по 10, чтобы не душить ESI\nconst fetched = [];\nfor (let i = 0; i < tasks.length; i += 10) {\n  fetched.push(...await Promise.all(tasks.slice(i, i + 10).map(fetchOrders)));\n}\n\nfunction walkSellBook(orders, target) {\n  const sorted = orders.filter(o => !o.is_buy_order).sort((a, b) => a.price - b.price);\n  let acc = 0, cost = 0, marginal = null;\n  for (const o of sorted) {\n    const take = Math.min(o.volume_remain, target - acc);\n    acc += take; cost += take * o.price; marginal = o.price;\n    if (acc >= target) break;\n  }\n  return acc ? { vwap: cost / acc, marginal, units: acc } : null;\n}\n\n// buy-ордера: только на самой хаб-станции или с range=region (иначе до них не доехать без крюка)\nfunction walkBuyBook(orders, target, hubStation) {\n  const sorted = orders\n    .filter(o => o.is_buy_order && (o.location_id === hubStation || o.range === 'region'))\n    .sort((a, b) => b.price - a.price);\n  let acc = 0, revenue = 0, marginal = null;\n  for (const o of sorted) {\n    const take = Math.min(o.volume_remain, target - acc);\n    acc += take; revenue += take * o.price; marginal = o.price;\n    if (acc >= target) break;\n  }\n  return acc ? { vwap: revenue / acc, marginal, units: acc } : null;\n}\n\nconst byType = {};\nfor (const r of fetched) {\n  const t = r.it.type_id;\n  if (!byType[t]) {\n    const vols = Object.values(r.it.daily_vol || {}).map(Number).filter(v => v > 0);\n    const hasAnyHistory = vols.length > 0;\n    // пол 10 — только если истории нет вообще ни по одному региону; иначе честные 5% от максимального оборота, минимум 1\n    const walkTarget = hasAnyHistory ? Math.max(1, Math.round(Math.max(...vols) * 0.05)) : 10;\n    byType[t] = { type_id: t, name: r.it.name, daily_vol: r.it.daily_vol || {}, walk_target: walkTarget, books: {} };\n  }\n  const target = byType[t].walk_target;\n  const sells = r.orders.filter(o => !o.is_buy_order);\n  const sellDepth = walkSellBook(r.orders, target);\n  const buyDepth  = walkBuyBook(r.orders, target, REGIONS[r.rid].hub);\n  const bestSell = sells.length ? Math.min(...sells.map(o => o.price)) : null;\n  const bestSellOrder = sells.find(o => o.price === bestSell);\n  const buys = r.orders.filter(o => o.is_buy_order);\n  byType[t].books[r.rid] = {\n    region_name: REGIONS[r.rid].name,\n    hub_station: REGIONS[r.rid].hub,\n    sell_vwap: sellDepth?.vwap ?? null,\n    sell_marginal: sellDepth?.marginal ?? null,\n    sell_units: sellDepth?.units ?? 0,\n    buy_vwap: buyDepth?.vwap ?? null,\n    buy_units: buyDepth?.units ?? 0,\n    best_sell: bestSell,\n    best_sell_location: bestSellOrder?.location_id ?? null,\n    best_buy: buys.length ? Math.max(...buys.map(o => o.price)) : null\n  };\n}\nreturn Object.values(byType).map(v => ({ json: v }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [304, -496],
+      "id": "bef986fd-de8f-4634-b77c-2c937e865474",
+      "name": "Fetch Market Books"
+    }
+  ],
+  "connections": {
+    "AI Risk Check1": { "main": [ [ { "node": "Compose Message", "type": "main", "index": 0 } ] ] },
+    "DeepSeek Chat Model1": { "ai_languageModel": [ [ { "node": "AI Risk Check1", "type": "ai_languageModel", "index": 0 } ] ] },
+    "Load Watchlist": { "main": [ [ { "node": "Fetch Market Books", "type": "main", "index": 0 } ] ] },
+    "Prepare Snapshots": { "main": [ [ { "node": "Save Snapshots", "type": "main", "index": 0 } ] ] },
+    "Arbitrage Calc": { "main": [ [ { "node": "Filter", "type": "main", "index": 0 } ] ] },
+    "Filter": { "main": [ [ { "node": "Log & Dedup Opportunity", "type": "main", "index": 0 } ] ] },
+    "Log & Dedup Opportunity": { "main": [ [ { "node": "Only Inserted", "type": "main", "index": 0 } ] ] },
+    "Schedule Trigger": { "main": [ [ { "node": "Load Watchlist", "type": "main", "index": 0 } ] ] },
+    "Resolve Station Names": { "main": [ [ { "node": "AI Risk Check1", "type": "main", "index": 0 } ] ] },
+    "Compose Message": { "main": [ [ { "node": "Send a text message", "type": "main", "index": 0 } ] ] },
+    "Only Inserted": { "main": [ [ { "node": "Resolve Station Names", "type": "main", "index": 0 } ] ] },
+    "Fetch Market Books": { "main": [ [ { "node": "Arbitrage Calc", "type": "main", "index": 0 }, { "node": "Prepare Snapshots", "type": "main", "index": 0 } ] ] }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "26c35b2a42f853d3aa7e9fc05a0c1f22b924bbd4d5a58ef93bb9b33df817c1c9"
+  }
+}
